@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
@@ -88,6 +89,66 @@ public class EncryptionHybridController {
                 encryptedData: {}
                 ===============================================================================================================
                 """, Base64.getEncoder().encodeToString(responseIv),Base64.getEncoder().encodeToString(encryptedResponse));
+        return ResponseEntity.ok(res);
+    }
+
+    @PostMapping("/secure/gcm")
+    public ResponseEntity<Map<String, String>> secureGcm(@RequestBody HybridPayload payload) throws Exception {
+        log.info("""
+            ===============================================================================================================
+            payload-client
+            iv: {}
+            EncryptedKey: {}
+            EncryptedData: {}
+            ===============================================================================================================
+            """, payload.getIv(), payload.getEncryptedKey(), payload.getEncryptedData());
+
+        // Step 1: Decrypt AES key with RSA private key
+        byte[] encryptedKeyBytes = Base64.getDecoder().decode(payload.getEncryptedKey());
+        PrivateKey privateKey = loadPrivateKey("private.pem");
+
+        Cipher rsaCipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-1AndMGF1Padding");
+        rsaCipher.init(Cipher.DECRYPT_MODE, privateKey);
+        byte[] aesKey = rsaCipher.doFinal(encryptedKeyBytes);
+
+        // Step 2: Decrypt AES-GCM encrypted data
+        byte[] iv = Base64.getDecoder().decode(payload.getIv());
+        byte[] encryptedData = Base64.getDecoder().decode(payload.getEncryptedData());
+
+        Cipher aesCipher = Cipher.getInstance("AES/GCM/NoPadding");
+        SecretKeySpec aesKeySpec = new SecretKeySpec(aesKey, "AES");
+        GCMParameterSpec gcmSpec = new GCMParameterSpec(128, iv); // 128-bit auth tag
+        aesCipher.init(Cipher.DECRYPT_MODE, aesKeySpec, gcmSpec);
+
+        String decryptedMessage = new String(aesCipher.doFinal(encryptedData), StandardCharsets.UTF_8);
+        log.info("""
+            ===============================================================================================================
+            decryptedMessage: {}
+            ===============================================================================================================
+            """, decryptedMessage);
+
+        // Step 3: Encrypt response using AES-GCM
+        byte[] responseIv = new byte[12]; // 12 bytes for GCM IV
+        new SecureRandom().nextBytes(responseIv);
+
+        Cipher aesResponseCipher = Cipher.getInstance("AES/GCM/NoPadding");
+        GCMParameterSpec responseGcmSpec = new GCMParameterSpec(128, responseIv);
+        aesResponseCipher.init(Cipher.ENCRYPT_MODE, aesKeySpec, responseGcmSpec);
+
+        String responseText = "Server received: " + decryptedMessage;
+        byte[] encryptedResponse = aesResponseCipher.doFinal(responseText.getBytes(StandardCharsets.UTF_8));
+
+        Map<String, String> res = new HashMap<>();
+        res.put("iv", Base64.getEncoder().encodeToString(responseIv));
+        res.put("encryptedData", Base64.getEncoder().encodeToString(encryptedResponse));
+        log.info("""
+            ===============================================================================================================
+            Encrypt and response back to client
+            iv: {}
+            encryptedData: {}
+            ===============================================================================================================
+            """, res.get("iv"), res.get("encryptedData"));
+
         return ResponseEntity.ok(res);
     }
 
